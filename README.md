@@ -39,12 +39,6 @@ This project builds a machine learning model to predict pharmaceutical price ero
    - Edit `config.yaml` to set paths and API endpoints
    - Orange Book data should be in `./data/EOBZIP_2025_10/` (or update path in config)
 
-3. **Optional API keys:**
-   ```bash
-   export OPENFDA_API_KEY=your_key  # For higher rate limits
-   export MEDICAID_APP_TOKEN=your_token
-   export CMS_APP_TOKEN=your_token
-   ```
 
 ## Usage
 
