@@ -29,6 +29,19 @@ class NADACClient:
         self.registry_path = Path(config["paths"]["cache_dir"]) / "nadac_uuid_registry.json"
         self.registry_path.parent.mkdir(parents=True, exist_ok=True)
         self.uuid_registry = self._load_registry()
+        
+        # Performance optimization: track discovery state and year bounds
+        self._warned_years = set()
+        self._discovered_once = False
+        self.min_year = None
+        self.max_year = None
+        self._month_cache = {}  # Optional memoization per month
+        
+        # Discover once if registry is empty
+        if not self.uuid_registry:
+            self.discover_uuid_registry(silent=True)
+        else:
+            self._update_year_bounds()
     
     def _load_registry(self) -> Dict[str, str]:
         """Load UUID registry from cache or config override."""
@@ -49,7 +62,18 @@ class NADACClient:
         with open(self.registry_path, "w") as f:
             json.dump(self.uuid_registry, f, indent=2)
     
-    def discover_uuid_registry(self) -> Dict[str, str]:
+    def _update_year_bounds(self):
+        """Update min_year and max_year from registry."""
+        if not self.uuid_registry:
+            self.min_year = None
+            self.max_year = None
+            return
+        
+        years = sorted(int(y) for y in self.uuid_registry.keys() if y.isdigit())
+        self.min_year = min(years) if years else None
+        self.max_year = max(years) if years else None
+    
+    def discover_uuid_registry(self, silent: bool = False) -> Dict[str, str]:
         """
         Query Medicaid DKAN catalog to discover year -> datastore UUID mapping for NADAC datasets.
         Returns and caches the registry.
@@ -110,15 +134,23 @@ class NADACClient:
             self.uuid_registry.update(nadac_datasets)
             self._save_registry()
             
-            print(f"Discovered {len(nadac_datasets)} NADAC datasets")
-            if nadac_datasets:
-                print(f"Years found: {sorted(nadac_datasets.keys())}")
+            if not silent:
+                print(f"Discovered {len(nadac_datasets)} NADAC datasets")
+                if nadac_datasets:
+                    print(f"Years found: {sorted(nadac_datasets.keys())}")
+            
+            self._discovered_once = True
+            self._update_year_bounds()
             return self.uuid_registry
         
         except Exception as e:
-            print(f"Error discovering NADAC UUID registry: {e}")
-            import traceback
-            traceback.print_exc()
+            if not silent:
+                print(f"Error discovering NADAC UUID registry: {e}")
+                import traceback
+                traceback.print_exc()
+            # Mark as discovered (even if failed) to prevent repeated attempts
+            self._discovered_once = True
+            self._update_year_bounds()
             # Return existing registry if discovery fails
             return self.uuid_registry
     
@@ -127,12 +159,12 @@ class NADACClient:
         return str(target_date.year)
     
     def _get_dataset_uuid(self, year: str) -> Optional[str]:
-        """Get dataset UUID for a given year."""
-        if year in self.uuid_registry:
-            return self.uuid_registry[year]
+        """
+        Get dataset UUID for a given year.
         
-        # Try discovery if not found
-        self.discover_uuid_registry()
+        Do NOT call discover here; just return what we have.
+        Discovery should happen once at init or explicitly.
+        """
         return self.uuid_registry.get(year)
     
     def _query_dkan_datastore(self, resource_info: str, body: dict) -> dict:
@@ -208,12 +240,44 @@ class NADACClient:
         if not ndcs_norm:
             return pd.DataFrame(columns=["ndc", "effective_date", "nadac_per_unit", "pricing_unit"])
         
+        # Optional memoization: check cache first
+        key = (tuple(sorted(set(ndcs_norm))), year_month)
+        if key in self._month_cache:
+            return self._month_cache[key].copy()
+        
         year = year_month.split("-")[0]
-        rid = self._get_dataset_uuid(year) or self.discover_uuid_registry().get(year)
+        
+        # Short-circuit out-of-range years (and warn once)
+        if self.min_year and self.max_year:
+            try:
+                year_int = int(year)
+                if year_int < self.min_year or year_int > self.max_year:
+                    if year not in self._warned_years:
+                        print(f"NADAC: skipping {year} (outside [{self.min_year}, {self.max_year}])")
+                        self._warned_years.add(year)
+                    # Return consistent empty frame
+                    empty_df = pd.DataFrame(columns=["ndc", "effective_date", "nadac_per_unit", "pricing_unit"])
+                    self._month_cache[key] = empty_df.copy()
+                    return empty_df
+            except ValueError:
+                # Invalid year format
+                pass
+        
+        # Get dataset UUID (do NOT discover here)
+        rid = self._get_dataset_uuid(year)
+        
+        # One last attempt: refresh once per run if not discovered yet
+        if not rid and not self._discovered_once:
+            self.discover_uuid_registry(silent=True)
+            rid = self._get_dataset_uuid(year)
         
         if not rid:
-            print(f"Warning: Could not find NADAC dataset for {year}")
-            return pd.DataFrame(columns=["ndc", "effective_date", "nadac_per_unit", "pricing_unit"])
+            if year not in self._warned_years:
+                print(f"NADAC: no dataset for {year}")
+                self._warned_years.add(year)
+            empty_df = pd.DataFrame(columns=["ndc", "effective_date", "nadac_per_unit", "pricing_unit"])
+            self._month_cache[key] = empty_df.copy()
+            return empty_df
         
         # Build date range for server-side filtering
         from calendar import monthrange
@@ -310,6 +374,8 @@ class NADACClient:
                 .apply(lambda x: "0" + x if len(x) == 10 else x)
             )
         
+        # Cache result before returning
+        self._month_cache[key] = df.copy()
         return df
 
 
