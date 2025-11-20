@@ -47,18 +47,19 @@ class OpenFDAClient:
     
     def _split_ingredients(self, raw: str) -> List[str]:
         """
-        Split ingredient string on separators (;, +, /, comma).
+        Split ingredient string on separators (;, +, /, comma, WITH, AND).
         
         Args:
-            raw: Raw ingredient string (e.g., "A; B" or "A + B")
+            raw: Raw ingredient string (e.g., "A; B" or "A + B" or "A WITH B")
         
         Returns:
             List of cleaned ingredient parts
         """
         if not raw:
             return []
-        # Split on ; , + / and collapse whitespace
-        parts = [p.strip() for p in re.split(r'[;,+/]', raw) if p.strip()]
+        # Split on ; , + / WITH AND and collapse whitespace
+        # Use case-insensitive matching for WITH/AND
+        parts = [p.strip() for p in re.split(r'\s*[;/+]\s*|\s+WITH\s+|\s+AND\s+', raw, flags=re.IGNORECASE) if p.strip()]
         return parts
     
     def _norm_text(self, v) -> str:
@@ -133,18 +134,25 @@ class OpenFDAClient:
             "SPRAY": {"SPRAY", "SPRAY, METERED", "AEROSOL"},
             "INJECTABLE": {"INJECTABLE", "INJECTION", "SOLUTION", "SOLUTION FOR INJECTION"},
             "INJECTION": {"INJECTION", "INJECTABLE", "SOLUTION FOR INJECTION"},
-            # routes
+            # routes - map generic "INJECTION" to specific injection routes
+            # Note: "INJECTION" as route is different from dosage form
+            "INJECTION_ROUTE": {"INJECTION", "INTRAVENOUS", "INTRAMUSCULAR", "SUBCUTANEOUS"},
+            "INTRAVENOUS": {"INTRAVENOUS", "INJECTION"},
+            "INTRAMUSCULAR": {"INTRAMUSCULAR", "INJECTION"},
+            "SUBCUTANEOUS": {"SUBCUTANEOUS", "INJECTION"},
             "ORAL": {"ORAL"},
             "SUBLINGUAL": {"SUBLINGUAL"},
+            "TOPICAL": {"TOPICAL"},
         }
     
-    def _match_with_synonyms(self, item_vals: Set[str], scd_val: Optional[str]) -> bool:
+    def _match_with_synonyms(self, item_vals: Set[str], scd_val: Optional[str], is_route: bool = False) -> bool:
         """
         Check if item values intersect with SCD value, with synonyms.
         
         Args:
             item_vals: Set of uppercase tokens from item
             scd_val: SCD value (string, may be comma-separated)
+            is_route: If True, handle route-specific synonyms (e.g., INJECTION → injection routes)
         
         Returns:
             True if there's a match (direct or via synonym)
@@ -156,6 +164,10 @@ class OpenFDAClient:
         target = scd_val.upper()
         target_set = syn.get(target, {target})
         
+        # Special handling for route "INJECTION" - expand to all injection routes
+        if is_route and target == "INJECTION":
+            target_set = {"INJECTION", "INTRAVENOUS", "INTRAMUSCULAR", "SUBCUTANEOUS"}
+        
         # Also explode comma-joined SCD values into tokens
         scd_tokens = self._to_upper_set(scd_val)
         all_targets = scd_tokens | target_set
@@ -166,9 +178,30 @@ class OpenFDAClient:
             expanded_targets.add(token)
             if token in syn:
                 expanded_targets.update(syn[token])
+            # Also check if token matches route injection synonyms
+            if is_route and token == "INJECTION":
+                expanded_targets.update({"INTRAVENOUS", "INTRAMUSCULAR", "SUBCUTANEOUS"})
         
         # Check if any item value matches any target (direct or synonym)
-        return bool(item_vals & expanded_targets)
+        if item_vals & expanded_targets:
+            return True
+        
+        # For dosage forms (not routes), also check token overlap
+        # This handles cases like "INJECTION, EMULSION" vs "INJECTABLE"
+        if not is_route:
+            # Extract tokens from item values (split on comma/space)
+            item_tokens = set()
+            for val in item_vals:
+                item_tokens.update([t.strip() for t in re.split(r'[,\s]+', val) if t.strip()])
+            
+            # Extract tokens from SCD value
+            scd_tokens_split = {t.strip() for t in re.split(r'[,\s]+', scd_val.upper()) if t.strip()}
+            
+            # Check for token overlap
+            if item_tokens & scd_tokens_split:
+                return True
+        
+        return False
     
     def _build_search(
         self, 
@@ -207,11 +240,16 @@ class OpenFDAClient:
             ing = scd.get("ingredient") or ""
             parts = self._split_ingredients(ing)
             if parts:
-                # Require all actives via AND (handles multi-ingredient combos)
-                must_all = " AND ".join(
-                    [f'active_ingredients.name:"{self._escape_q(p)}"' for p in parts]
-                )
-                terms.append(f"({must_all})")
+                if len(parts) > 1:
+                    # Multi-ingredient: require all actives via AND
+                    must_all = " AND ".join(
+                        [f'active_ingredients.name:"{self._escape_q(p)}"' for p in parts]
+                    )
+                    terms.append(f"({must_all})")
+                else:
+                    # Single ingredient: try both generic_name and active_ingredients.name
+                    ing_escaped = self._escape_q(parts[0])
+                    terms.append(f'(generic_name:"{ing_escaped}" OR active_ingredients.name:"{ing_escaped}")')
         
         return " AND ".join(terms) if terms else ""
     
@@ -288,15 +326,20 @@ class OpenFDAClient:
         Returns:
             List of 11-digit package_ndc strings
         """
-        # Minimal server search: ingredient only
-        search = self._build_search(appl_no=None, scd=scd, marketing_category=None)
+        # Try application_number + ingredient first
+        search = self._build_search(appl_no=appl_no, scd=scd, marketing_category=None)
         params = {"search": search, "limit": 1000}
         
         try:
             data = self._make_request(params)
-            # Fallback: if empty, try ingredient-less (rarely needed)
+            # Fallback: try application_number only
             if not data.get("results"):
-                data = self._make_request({"limit": 1000})
+                search = self._build_search(appl_no=appl_no, scd=None, marketing_category=None)
+                data = self._make_request({"search": search, "limit": 1000})
+            # Fallback: try ingredient only
+            if not data.get("results"):
+                search = self._build_search(appl_no=None, scd=scd, marketing_category=None)
+                data = self._make_request({"search": search, "limit": 1000})
             
             ndcs = []
             t0_int = int(t0.strftime("%Y%m%d"))
@@ -333,9 +376,9 @@ class OpenFDAClient:
                 item_forms = self._to_upper_set(item.get("dosage_form"))
                 item_routes = self._to_upper_set(item.get("route"))
                 
-                if not self._match_with_synonyms(item_forms, scd.get("dosage_form")):
+                if not self._match_with_synonyms(item_forms, scd.get("dosage_form"), is_route=False):
                     continue
-                if not self._match_with_synonyms(item_routes, scd.get("route")):
+                if not self._match_with_synonyms(item_routes, scd.get("route"), is_route=True):
                     continue
                 
                 # 4) Gather package ndcs
@@ -405,9 +448,9 @@ class OpenFDAClient:
                 item_forms = self._to_upper_set(item.get("dosage_form"))
                 item_routes = self._to_upper_set(item.get("route"))
                 
-                if not self._match_with_synonyms(item_forms, scd.get("dosage_form")):
+                if not self._match_with_synonyms(item_forms, scd.get("dosage_form"), is_route=False):
                     continue
-                if not self._match_with_synonyms(item_routes, scd.get("route")):
+                if not self._match_with_synonyms(item_routes, scd.get("route"), is_route=True):
                     continue
                 
                 # 4) Get labeler
