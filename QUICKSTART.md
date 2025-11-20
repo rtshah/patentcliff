@@ -33,22 +33,49 @@ python -m src.label.build_events
 ```
 
 ### Step 3: Build Labels (requires API access)
+
+**Full run (all events):**
 ```bash
 python -m src.label.build_label
 ```
-**Note:** This step makes API calls to openFDA and NADAC. For initial testing with 50-100 events, this may take some time.
 
-### Step 4: Build Features
+**Quick development run (100 events only):**
+```bash
+python -m src.label.build_label --limit 100
+```
+
+**Or use Makefile shortcut:**
+```bash
+make build_labels_quick
+```
+
+**Note:** This step makes API calls to openFDA and NADAC. For initial testing, use `--limit 100` to process only 100 events for faster iteration.
+
+### Step 4: Diagnose QC Issues (if needed)
+
+If you see "After QC filters: 0 rows", run the diagnostic script:
+```bash
+python scripts/diagnose_qc.py
+```
+
+This will show:
+- QC pass rates for each gate (1.0 = 100% passing)
+- Examples of rows failing each QC check
+- Helps identify which filter is too strict
+
+### Step 5: Build Features
 ```bash
 python -m src.model.dataset
 ```
 
-### Step 5: Train Models
+**Note:** The dataset script now includes QC diagnostics automatically. It will print pass rates and examples before filtering.
+
+### Step 6: Train Models
 ```bash
 python -m src.model.train
 ```
 
-### Step 6: Generate Plots
+### Step 7: Generate Plots
 ```bash
 python -m src.model.shap_plots
 ```
@@ -96,10 +123,37 @@ export PYTHONPATH="${PYTHONPATH}:$(pwd)"
 - Add `OPENFDA_API_KEY` environment variable for higher rate limits
 - The client includes basic rate limiting, but you may need to add delays for large batches
 
-### 4. Missing Data
-- Some events may not have brand NDCs at T0 (flagged with `missing_brand_price_t0`)
-- Some events may not have generics by T+6 (flagged with `missing_generic_price_t6`)
-- These are filtered out in the QC step in `dataset.py`
+### 4. Missing Data / QC Filtering Issues
+
+**If you see "After QC filters: 0 rows":**
+
+1. **Run diagnostics:**
+   ```bash
+   python scripts/diagnose_qc.py
+   ```
+
+2. **Common issues and fixes:**
+   
+   **qc_year_ok = 0.0 (T0 dates outside NADAC coverage 2013-2025)**
+   - Many events have T0 dates in the future (2026-2034)
+   - These can't have NADAC prices since NADAC only covers 2013-2025
+   - **Fix:** Filter events to T0 dates within NADAC window before building labels
+   
+   **qc_has_brand = 0.0 (No brand NDCs found)**
+   - openFDA queries may be too strict or failing on combo ingredients
+   - **Fix:** Check openFDA client logs for 400 errors on combo ingredients
+   
+   **qc_has_brand_price = 0.0 (No brand prices)**
+   - Usually because T0 dates are future/out-of-range OR no brand NDCs found
+   - **Fix:** Ensure T0 dates are within NADAC coverage window
+   
+   **qc_has_generic_price = 0.0 (No generic prices)**
+   - Usually because T+6 months falls outside NADAC coverage OR no generics found
+   - **Fix:** Ensure T0 dates allow T+6 to be within NADAC window
+
+3. **Some events may not have brand NDCs at T0** (flagged with `missing_brand_price_t0`)
+4. **Some events may not have generics by T+6** (flagged with `missing_generic_price_t6`)
+5. **These are filtered out in the QC step in `dataset.py`**
 
 ## Next Steps
 

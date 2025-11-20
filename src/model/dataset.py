@@ -3,6 +3,7 @@ import pandas as pd
 from pathlib import Path
 from datetime import date
 import sys
+import json
 
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
@@ -16,12 +17,112 @@ from src.connectors.partd_client import PartDClient
 from src.connectors.rxnorm_client import RxNormClient
 
 
+def _qc_flags(df: pd.DataFrame, config=None) -> pd.DataFrame:
+    """
+    Compute QC flags for diagnostic reporting.
+    
+    Args:
+        df: Labels DataFrame
+        config: Optional config dict (for QC thresholds)
+    
+    Returns:
+        DataFrame with boolean flags for each QC check.
+    """
+    if config is None:
+        config = load_config()
+    
+    qc_config = config.get("qc", {})
+    
+    def _lenlike(x):
+        """Helper to count items in various formats."""
+        if isinstance(x, (list, tuple, set)):
+            return len(x)
+        if isinstance(x, str):
+            # Try to parse JSON-encoded array
+            try:
+                y = json.loads(x)
+                return len(y) if isinstance(y, (list, tuple, set)) else (0 if not y else 1)
+            except Exception:
+                return 0 if x.strip() == "" else 1
+        return 0 if x is None else 1
+    
+    flags = pd.DataFrame(index=df.index)
+    
+    # Year check: T0 must be within NADAC coverage (2013-2025)
+    if "t0" in df.columns:
+        t0_years = pd.to_datetime(df["t0"], errors="coerce").dt.year
+        flags["qc_year_ok"] = t0_years.between(2013, 2025, inclusive="both")
+    else:
+        flags["qc_year_ok"] = True
+    
+    # Brand NDCs check
+    if "brand_ndcs_count" in df.columns:
+        flags["qc_has_brand"] = df["brand_ndcs_count"].fillna(0) > 0
+    elif "brand_ndcs" in df.columns:
+        flags["qc_has_brand"] = df["brand_ndcs"].apply(_lenlike) > 0
+    else:
+        flags["qc_has_brand"] = False
+    
+    # Generic NDCs check
+    if "generic_ndcs_count" in df.columns:
+        flags["qc_has_generic"] = df["generic_ndcs_count"].fillna(0) > 0
+    elif "generic_ndcs" in df.columns:
+        flags["qc_has_generic"] = df["generic_ndcs"].apply(_lenlike) > 0
+    else:
+        flags["qc_has_generic"] = False
+    
+    # NADAC price data check
+    flags["qc_has_brand_price"] = ~df.get("missing_brand_price_t0", pd.Series(False, index=df.index))
+    flags["qc_has_generic_price"] = ~df.get("missing_generic_price_t6", pd.Series(False, index=df.index))
+    
+    # Mixed units check
+    flags["qc_no_mixed_units"] = ~df.get("mixed_units", pd.Series(False, index=df.index))
+    
+    # Generic labelers check
+    min_labelers = qc_config.get("min_generic_labelers_t6", 1)
+    if "entrants_by_6m" in df.columns:
+        flags["qc_sufficient_labelers"] = df["entrants_by_6m"].fillna(0) >= min_labelers
+    else:
+        flags["qc_sufficient_labelers"] = False
+    
+    # Future date check
+    flags["qc_not_future"] = ~df.get("t0_in_future", pd.Series(False, index=df.index))
+    
+    # Price drop computed
+    flags["qc_has_price_drop"] = df.get("price_drop_pct", pd.Series()).notna()
+    
+    return flags
+
+
 def assemble_training_table(labels_df: pd.DataFrame, config=None) -> pd.DataFrame:
     """
     Join labels + features; apply QC filters; return modeling DataFrame.
     """
     if config is None:
         config = load_config()
+    
+    # Compute QC flags for diagnostic reporting
+    qc_flags = _qc_flags(labels_df, config)
+    
+    # Print QC pass rates (1.0 = 100% passing)
+    print("\nQC pass rates (1.0 = 100% passing each gate):")
+    pass_rates = qc_flags.mean().sort_values()
+    for flag_name, pass_rate in pass_rates.items():
+        print(f"  {flag_name}: {pass_rate:.3f} ({pass_rate*100:.1f}%)")
+    
+    # Show examples of failures for the worst-performing gates
+    worst_gates = pass_rates.head(3)
+    for flag_name in worst_gates.index:
+        if pass_rates[flag_name] < 1.0:  # Only show if not 100% passing
+            failing = labels_df.loc[~qc_flags[flag_name]].head(3)
+            if len(failing) > 0:
+                print(f"\nExamples failing {flag_name} (showing first 3):")
+                display_cols = [c for c in ["appl_no", "scd_key", "t0", "ingredient", 
+                                            "dosage_form", "route", "brand_ndcs_count", 
+                                            "generic_ndcs_count", "entrants_by_6m",
+                                            "missing_brand_price_t0", "missing_generic_price_t6",
+                                            "price_drop_pct"] if c in failing.columns]
+                print(failing[display_cols].to_string())
     
     # Apply QC filters
     qc_config = config["qc"]
@@ -49,7 +150,7 @@ def assemble_training_table(labels_df: pd.DataFrame, config=None) -> pd.DataFram
     # Drop if price_drop_pct is missing
     strict_df = strict_df[strict_df["price_drop_pct"].notna()]
     
-    print(f"After QC filters: {len(strict_df)} rows (from {len(labels_df)})")
+    print(f"\nAfter QC filters: {len(strict_df)} rows (from {len(labels_df)})")
     
     # Initialize clients for feature engineering
     nadac_client = NADACClient(config)

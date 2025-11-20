@@ -131,10 +131,10 @@ class OpenFDAClient:
             # dosage forms
             "AEROSOL": {"AEROSOL", "SPRAY", "SPRAY, METERED"},
             "SPRAY": {"SPRAY", "SPRAY, METERED", "AEROSOL"},
-            "INJECTABLE": {"INJECTABLE", "SOLUTION", "SOLUTION FOR INJECTION"},
+            "INJECTABLE": {"INJECTABLE", "INJECTION", "SOLUTION", "SOLUTION FOR INJECTION"},
+            "INJECTION": {"INJECTION", "INJECTABLE", "SOLUTION FOR INJECTION"},
             # routes
             "ORAL": {"ORAL"},
-            "INJECTION": {"INJECTION", "INTRAVENOUS", "INTRAMUSCULAR", "SUBCUTANEOUS"},
             "SUBLINGUAL": {"SUBLINGUAL"},
         }
     
@@ -329,15 +329,13 @@ class OpenFDAClient:
                         # Different NDA — skip
                         continue
                 
-                # 3) SCD check (normalize form/route to prevent 'list' object errors)
-                item_form = self._norm_text(item.get("dosage_form"))
-                scd_form = self._norm_text(scd.get("dosage_form"))
-                if scd_form and item_form != scd_form:
-                    continue
+                # 3) SCD check (use synonym matching for form/route)
+                item_forms = self._to_upper_set(item.get("dosage_form"))
+                item_routes = self._to_upper_set(item.get("route"))
                 
-                item_route = self._norm_text(item.get("route"))
-                scd_route = self._norm_text(scd.get("route"))
-                if scd_route and item_route != scd_route:
+                if not self._match_with_synonyms(item_forms, scd.get("dosage_form")):
+                    continue
+                if not self._match_with_synonyms(item_routes, scd.get("route")):
                     continue
                 
                 # 4) Gather package ndcs
@@ -403,15 +401,13 @@ class OpenFDAClient:
                 if not ms_int or ms_int > t6_int:
                     continue
                 
-                # 3) SCD check (normalize form/route to prevent 'list' object errors)
-                item_form = self._norm_text(item.get("dosage_form"))
-                scd_form = self._norm_text(scd.get("dosage_form"))
-                if scd_form and item_form != scd_form:
-                    continue
+                # 3) SCD check (use synonym matching for form/route)
+                item_forms = self._to_upper_set(item.get("dosage_form"))
+                item_routes = self._to_upper_set(item.get("route"))
                 
-                item_route = self._norm_text(item.get("route"))
-                scd_route = self._norm_text(scd.get("route"))
-                if scd_route and item_route != scd_route:
+                if not self._match_with_synonyms(item_forms, scd.get("dosage_form")):
+                    continue
+                if not self._match_with_synonyms(item_routes, scd.get("route")):
                     continue
                 
                 # 4) Get labeler

@@ -28,6 +28,10 @@ def build_label_row(event: Dict, openfda_client: OpenFDAClient, nadac_client: NA
     t0 = event["t0"]
     if isinstance(t0, str):
         t0 = pd.to_datetime(t0).date()
+    elif isinstance(t0, pd.Timestamp):
+        t0 = t0.date()
+    elif hasattr(t0, 'date'):  # Handle other datetime-like objects
+        t0 = t0.date()
     
     scd = {
         "ingredient": event.get("ingredient", ""),
@@ -143,6 +147,18 @@ def main(limit: Optional[int] = None):
     
     events = pd.read_parquet(events_path)
     print(f"Loaded {len(events)} events")
+    
+    # Filter to events with T0 dates that allow NADAC prices
+    # NADAC coverage: 2013-2025, need T0 and T0+6m to be within window
+    events["t0"] = pd.to_datetime(events["t0"])
+    nadac_max_date = pd.Timestamp("2025-12-31")
+    cutoff = nadac_max_date - pd.Timedelta(days=180)  # 6 months before max date
+    
+    events = events[
+        (events["t0"] <= cutoff) & 
+        (events["t0"].dt.year.between(2013, 2025, inclusive="both"))
+    ]
+    print(f"After filtering to NADAC window (2013-2025, T0+6m <= 2025-12-31): {len(events)} events")
     
     # Limit events if specified (for faster development/testing)
     if limit is not None and limit > 0:
