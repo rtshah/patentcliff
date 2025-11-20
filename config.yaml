@@ -1,0 +1,85 @@
+project:
+  name: rx_price_erosion
+  seed: 42
+
+paths:
+  orange_book_dir: ./data/EOBZIP_2025_10/
+  cache_dir: ./config/cache/
+  artifacts_dir: ./artifacts/
+  reports_dir: ./reports/
+  api_cache_dir: ./data/api_cache/
+
+apis:
+  openfda:
+    base_url: https://api.fda.gov/drug/ndc.json
+    timeout_s: 20
+    api_key_env: OPENFDA_API_KEY
+
+  medicaid_dkan:
+    base_url: https://data.medicaid.gov/api/1
+    timeout_s: 30
+    app_token_env: MEDICAID_APP_TOKEN
+    nadac_uuid_registry: {}
+
+  cms_partd:
+    base_url: https://data.cms.gov/data-api/v1
+    timeout_s: 30
+    app_token_env: CMS_APP_TOKEN
+
+  rxnav:
+    rxcui_from_ndc: https://rxnav.nlm.nih.gov/REST/ndcproperties.json?ndc=
+    rxclass_from_rxcui: https://rxnav.nlm.nih.gov/REST/rxclass/class/byRxcui.json?rxcui={rxcui}&relaSource=ATC
+
+features:
+  use_exclusivity: false
+  use_rxnorm: true
+  volatility_window_months: 12
+  complexity_map:
+    route:
+      INTRAVENOUS: 5
+      INTRAMUSCULAR: 5
+      SUBCUTANEOUS: 5
+      OPHTHALMIC: 4
+      INHALATION: 4
+      TRANSDERMAL: 3
+      NASAL: 3
+      ORAL: 1
+      RECTAL: 2
+      VAGINAL: 2
+    dosage_form:
+      INJECTION: 5
+      SOLUTION: 2
+      SUSPENSION: 2
+      AEROSOL: 3
+      CAPSULE: 2
+      TABLET: 1
+      OINTMENT: 3
+      CREAM: 3
+      GEL: 3
+
+qc:
+  min_generic_labelers_t6: 1
+  drop_if_mixed_pricing_units: true
+  min_brand_price_months_history: 9
+
+modeling:
+  splits:
+    train_start: 2010-01-01
+    train_end: 2015-12-31
+    val_start: 2016-01-01
+    val_end: 2017-12-31
+    test_start: 2018-01-01
+    test_end: 2020-12-31
+  ensemble: val_rmse_weights
+  xgb:
+    n_trials: 40
+    param_space:
+      max_depth: [3, 10]
+      learning_rate: [0.01, 0.1]
+      n_estimators: [200, 600]
+      subsample: [0.7, 0.95]
+      colsample_bytree: [0.6, 1.0]
+
+logging:
+  mlflow_tracking_uri: ./mlruns
+

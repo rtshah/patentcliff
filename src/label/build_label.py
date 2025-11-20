@@ -1,0 +1,178 @@
+"""Build labels (price_T0, price_T6, price_drop_pct) from events."""
+import pandas as pd
+from pathlib import Path
+from datetime import date, timedelta
+from typing import Dict
+import sys
+
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
+
+from src.utils import load_config
+from src.connectors.openfda_client import OpenFDAClient
+from src.connectors.nadac_client import NADACClient
+
+
+def build_label_row(event: Dict, openfda_client: OpenFDAClient, nadac_client: NADACClient) -> Dict:
+    """
+    Build label row for a single event.
+    
+    Input: {appl_no, scd_key, ingredient, strength, dosage_form, route, t0, ...}
+    Output: {
+      price_t0, price_t6, price_drop_pct,
+      entrants_by_6m, 
+      qc: {missing_brand_price_t0, missing_generic_price_t6, mixed_units, ...}
+    }
+    """
+    t0 = event["t0"]
+    if isinstance(t0, str):
+        t0 = pd.to_datetime(t0).date()
+    
+    scd = {
+        "ingredient": event.get("ingredient", ""),
+        "strength": event.get("strength", ""),
+        "dosage_form": event.get("dosage_form", ""),
+        "route": event.get("route", ""),
+    }
+    
+    # Get brand NDCs at T0
+    brand_ndcs = openfda_client.list_brand_ndcs_at_t0(
+        event["appl_no"], 
+        scd, 
+        t0
+    )
+    
+    # Get generic NDCs by T+6
+    generic_ndcs, labelers = openfda_client.list_generic_ndcs_by_t6(scd, t0)
+    entrants_by_6m = len(labelers)
+    
+    # Compute price_T0
+    t0_year_month = t0.strftime("%Y-%m")
+    brand_nadac = nadac_client.fetch_nadac_month(brand_ndcs, t0_year_month)
+    
+    price_t0 = None
+    pricing_unit_t0 = None
+    missing_brand_price_t0 = True
+    
+    if not brand_nadac.empty and "nadac_per_unit" in brand_nadac.columns:
+        # Check for mixed units
+        units = brand_nadac["pricing_unit"].dropna().unique()
+        if len(units) > 1:
+            # Mixed units - flag it
+            mixed_units_t0 = True
+        else:
+            mixed_units_t0 = False
+            pricing_unit_t0 = units[0] if len(units) > 0 else None
+        
+        # Compute median price
+        prices = pd.to_numeric(brand_nadac["nadac_per_unit"], errors="coerce").dropna()
+        if not prices.empty:
+            price_t0 = float(prices.median())
+            missing_brand_price_t0 = False
+    else:
+        mixed_units_t0 = False
+    
+    # Compute price_T6
+    t6 = t0 + timedelta(days=180)  # ~6 months
+    t6_year_month = t6.strftime("%Y-%m")
+    generic_nadac = nadac_client.fetch_nadac_month(generic_ndcs, t6_year_month)
+    
+    price_t6 = None
+    pricing_unit_t6 = None
+    missing_generic_price_t6 = True
+    
+    if not generic_nadac.empty and "nadac_per_unit" in generic_nadac.columns:
+        units = generic_nadac["pricing_unit"].dropna().unique()
+        if len(units) > 1:
+            mixed_units_t6 = True
+        else:
+            mixed_units_t6 = False
+            pricing_unit_t6 = units[0] if len(units) > 0 else None
+        
+        prices = pd.to_numeric(generic_nadac["nadac_per_unit"], errors="coerce").dropna()
+        if not prices.empty:
+            price_t6 = float(prices.median())
+            missing_generic_price_t6 = False
+    else:
+        mixed_units_t6 = False
+    
+    # Compute price_drop_pct
+    price_drop_pct = None
+    if price_t0 is not None and price_t6 is not None and price_t0 > 0:
+        price_drop_pct = ((price_t0 - price_t6) / price_t0) * 100
+    
+    # QC flags
+    mixed_units = mixed_units_t0 or mixed_units_t6
+    too_few_generic_ndcs = len(generic_ndcs) < 2
+    t0_in_future = t0 > date.today()
+    
+    result = {
+        **event,  # Include all original event fields
+        "price_t0": price_t0,
+        "price_t6": price_t6,
+        "price_drop_pct": price_drop_pct,
+        "entrants_by_6m": entrants_by_6m,
+        "brand_ndcs_count": len(brand_ndcs),
+        "generic_ndcs_count": len(generic_ndcs),
+        "pricing_unit_t0": pricing_unit_t0,
+        "pricing_unit_t6": pricing_unit_t6,
+        "missing_brand_price_t0": missing_brand_price_t0,
+        "missing_generic_price_t6": missing_generic_price_t6,
+        "mixed_units": mixed_units,
+        "too_few_generic_ndcs": too_few_generic_ndcs,
+        "t0_in_future": t0_in_future,
+    }
+    
+    return result
+
+
+def main():
+    """Build labels.parquet from events."""
+    config = load_config()
+    
+    # Load events
+    events_path = Path(config["paths"]["artifacts_dir"]) / "events.parquet"
+    if not events_path.exists():
+        raise FileNotFoundError(f"Events file not found: {events_path}. Run build_events.py first.")
+    
+    events = pd.read_parquet(events_path)
+    print(f"Loaded {len(events)} events")
+    
+    # Initialize clients
+    openfda_client = OpenFDAClient(config)
+    nadac_client = NADACClient(config)
+    
+    # Discover NADAC registry if needed
+    if not nadac_client.uuid_registry:
+        print("Discovering NADAC UUID registry...")
+        nadac_client.discover_uuid_registry()
+    
+    # Build labels
+    labels = []
+    for idx, event in events.iterrows():
+        if idx % 10 == 0:
+            print(f"Processing event {idx+1}/{len(events)}...")
+        
+        try:
+            label_row = build_label_row(event.to_dict(), openfda_client, nadac_client)
+            labels.append(label_row)
+        except Exception as e:
+            print(f"Error processing event {idx}: {e}")
+            continue
+    
+    labels_df = pd.DataFrame(labels)
+    
+    # Save
+    artifacts_dir = Path(config["paths"]["artifacts_dir"])
+    output_path = artifacts_dir / "labels.parquet"
+    labels_df.to_parquet(output_path, index=False)
+    print(f"Saved {len(labels_df)} labels to {output_path}")
+    
+    # Save sample
+    labels_df.head(100).to_csv(artifacts_dir / "labels_sample.csv", index=False)
+    print(f"Saved sample to {artifacts_dir / 'labels_sample.csv'}")
+
+
+if __name__ == "__main__":
+    main()
+

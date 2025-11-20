@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+
+# MLflow
+mlruns/
+mlartifacts/
+
+# Data
+data/api_cache/
+data/raw/
+*.parquet
+*.csv
+!tests/fixtures/*.csv
+
+# Artifacts
+artifacts/
+!artifacts/.gitkeep
+
+# Config cache
+config/cache/
+!config/cache/.gitkeep
+
+# Reports (keep structure)
+reports/*.png
+reports/*.json
+!reports/.gitkeep
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
