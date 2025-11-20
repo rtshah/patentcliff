@@ -1,15 +1,15 @@
 # Rx Price Erosion Prediction Pipeline
 
-An end-to-end pipeline that predicts the percentage price drop six months after a brand drug loses patent/exclusivity protection.
+When drug exclusivities end, generic competitors enter the market and brand drug prices can collapse by more than 99.99% within six months. This project builds an end-to-end ML system to predict the magnitude of this price erosion, enabling pharmaceutical manufacturers, payers, and investors to quantify patent cliff risk and plan market strategies. Core prediction task: Given a brand drug losing protection at time T₀, predict the percentage price drop 6 months later when measured at pharmacy acquisition cost (NADAC). Patent cliffs represent billions in revenue shifts annually. Accurate erosion forecasts inform:
 
-## Overview
+(1) Pharma companies for portfolio risk management, authorized generic timing, potentially informing patent legal strategy. (2) Payers/PBMs for formulary planning and budget forecasting. (3) Investors.
 
 This project builds a machine learning model to predict pharmaceutical price erosion using:
-- **Orange Book** data for patent/exclusivity expiry dates (T₀)
-- **openFDA NDC API** for brand and generic product listings
-- **NADAC** (National Average Drug Acquisition Cost) for pricing data
-- **Medicare Part D** for market size/utilization features
-- **RxNorm/RxClass** for therapeutic class mapping
+- Orange Book data for patent/exclusivity expiry dates (T₀)
+- openFDA NDC API for brand and generic product listings
+- NADAC (National Average Drug Acquisition Cost) for pricing data
+- Medicare Part D for market size/utilization features
+- RxNorm/RxClass for therapeutic class mapping
 
 ## Project Structure
 
@@ -39,12 +39,6 @@ This project builds a machine learning model to predict pharmaceutical price ero
    - Edit `config.yaml` to set paths and API endpoints
    - Orange Book data should be in `./data/EOBZIP_2025_10/` (or update path in config)
 
-3. **Optional API keys:**
-   ```bash
-   export OPENFDA_API_KEY=your_key  # For higher rate limits
-   export MEDICAID_APP_TOKEN=your_token
-   export CMS_APP_TOKEN=your_token
-   ```
 
 ## Usage
 
