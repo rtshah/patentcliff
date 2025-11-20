@@ -1,15 +1,17 @@
 # Rx Price Erosion Prediction Pipeline
 
-An end-to-end pipeline that predicts the percentage price drop six months after a brand drug loses patent/exclusivity protection.
+When drug exclusivities end, generic competitors enter the market and brand drug prices can collapse by more than 99.99% within six months. This project builds an end-to-end ML system to predict the magnitude of this price erosion, enabling pharmaceutical manufacturers, payers, and investors to quantify patent cliff risk and plan market strategies. Core prediction task: Given a brand drug losing protection at time T₀, predict the percentage price drop 6 months later when measured at pharmacy acquisition cost (NADAC). Patent cliffs represent billions in revenue shifts annually. Accurate erosion forecasts inform:
 
-## Overview
+Pharma companies: Portfolio risk management, R&D prioritization, authorized generic timing
+Payers/PBMs: Formulary planning, budget forecasting, generic transition programs
+Investors: Patent portfolio valuation, M&A due diligence, short/long positioning
 
 This project builds a machine learning model to predict pharmaceutical price erosion using:
-- **Orange Book** data for patent/exclusivity expiry dates (T₀)
-- **openFDA NDC API** for brand and generic product listings
-- **NADAC** (National Average Drug Acquisition Cost) for pricing data
-- **Medicare Part D** for market size/utilization features
-- **RxNorm/RxClass** for therapeutic class mapping
+- Orange Book data for patent/exclusivity expiry dates (T₀)
+- openFDA NDC API for brand and generic product listings
+- NADAC (National Average Drug Acquisition Cost) for pricing data
+- Medicare Part D for market size/utilization features
+- RxNorm/RxClass for therapeutic class mapping
 
 ## Project Structure
 
