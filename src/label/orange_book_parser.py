@@ -69,6 +69,19 @@ class OrangeBookParser:
             scd_data.append(scd_info)
         
         scd_df = pd.DataFrame(scd_data)
+        
+        # Drop original ingredient and strength columns to avoid duplicates
+        # (SCD extraction provides normalized versions we want to keep)
+        columns_to_drop = []
+        if "ingredient" in df.columns and "ingredient" in scd_df.columns:
+            columns_to_drop.append("ingredient")
+        if "strength" in df.columns and "strength" in scd_df.columns:
+            columns_to_drop.append("strength")
+        
+        if columns_to_drop:
+            df = df.drop(columns=columns_to_drop)
+        
+        # Concatenate SCD data
         df = pd.concat([df, scd_df], axis=1)
         
         return df
