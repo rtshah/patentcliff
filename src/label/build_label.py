@@ -2,8 +2,9 @@
 import pandas as pd
 from pathlib import Path
 from datetime import date, timedelta
-from typing import Dict
+from typing import Dict, Optional
 import sys
+import argparse
 
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
@@ -126,8 +127,13 @@ def build_label_row(event: Dict, openfda_client: OpenFDAClient, nadac_client: NA
     return result
 
 
-def main():
-    """Build labels.parquet from events."""
+def main(limit: Optional[int] = None):
+    """
+    Build labels.parquet from events.
+    
+    Args:
+        limit: Optional limit on number of events to process (for faster development/testing)
+    """
     config = load_config()
     
     # Load events
@@ -137,6 +143,11 @@ def main():
     
     events = pd.read_parquet(events_path)
     print(f"Loaded {len(events)} events")
+    
+    # Limit events if specified (for faster development/testing)
+    if limit is not None and limit > 0:
+        events = events.head(limit)
+        print(f"Limiting to first {len(events)} events for faster iteration")
     
     # Initialize clients
     openfda_client = OpenFDAClient(config)
@@ -149,9 +160,10 @@ def main():
     
     # Build labels
     labels = []
+    total_events = len(events)
     for idx, event in events.iterrows():
         if idx % 10 == 0:
-            print(f"Processing event {idx+1}/{len(events)}...")
+            print(f"Processing event {idx+1}/{total_events}...")
         
         try:
             label_row = build_label_row(event.to_dict(), openfda_client, nadac_client)
@@ -174,5 +186,13 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Build labels from events")
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Limit number of events to process (for faster development/testing). Example: --limit 100"
+    )
+    args = parser.parse_args()
+    main(limit=args.limit)
 

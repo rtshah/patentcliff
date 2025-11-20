@@ -4,6 +4,7 @@ help:
 	@echo "Available targets:"
 	@echo "  make data          - Pull sample data from APIs and cache"
 	@echo "  make build_labels  - Build labels.parquet from events"
+	@echo "  make build_labels_quick - Build labels with only 100 events (for faster dev)"
 	@echo "  make features      - Build features.parquet"
 	@echo "  make train         - Train models and log to MLflow"
 	@echo "  make serve         - Run FastAPI server on :8000"
@@ -18,6 +19,10 @@ data:
 build_labels:
 	python -m src.label.build_events
 	python -m src.label.build_label
+
+build_labels_quick:
+	python -m src.label.build_events
+	python -m src.label.build_label --limit 100
 
 features:
 	python -m src.model.dataset
