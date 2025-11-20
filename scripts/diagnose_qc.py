@@ -75,7 +75,11 @@ qc["qc_has_generic_price"] = ~df.get("missing_generic_price_t6", pd.Series(False
 qc["qc_no_mixed_units"] = ~df.get("mixed_units", pd.Series(False, index=df.index))
 qc["qc_sufficient_labelers"] = df.get("entrants_by_6m", pd.Series(0, index=df.index)).fillna(0) >= 1
 qc["qc_not_future"] = ~df.get("t0_in_future", pd.Series(False, index=df.index))
-qc["qc_has_price_drop"] = df.get("price_drop_pct", pd.Series()).notna()
+# Price drop computed: both prices present after unit harmonization & date snapping
+qc["qc_has_price_drop"] = (
+    ~df.get("missing_brand_price_t0", pd.Series(True, index=df.index)) &
+    ~df.get("missing_generic_price_t6", pd.Series(True, index=df.index))
+)
 
 # Print pass rates
 print("QC pass rates (1.0 = 100% passing each gate):")

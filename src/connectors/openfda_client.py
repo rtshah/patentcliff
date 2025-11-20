@@ -134,6 +134,11 @@ class OpenFDAClient:
             "SPRAY": {"SPRAY", "SPRAY, METERED", "AEROSOL"},
             "INJECTABLE": {"INJECTABLE", "INJECTION", "SOLUTION", "SOLUTION FOR INJECTION"},
             "INJECTION": {"INJECTION", "INJECTABLE", "SOLUTION FOR INJECTION"},
+            "OPHTHALMIC SOLUTION": {"OPHTHALMIC SOLUTION", "SOLUTION", "DROPS", "OPHTHALMIC"},
+            "SOLUTION": {"SOLUTION", "OPHTHALMIC SOLUTION", "DROPS"},
+            "DROPS": {"DROPS", "SOLUTION", "OPHTHALMIC SOLUTION"},
+            "OTIC SUSPENSION": {"OTIC SUSPENSION", "SUSPENSION", "DROPS", "OTIC"},
+            "SUSPENSION": {"SUSPENSION", "OTIC SUSPENSION", "DROPS"},
             # routes - map generic "INJECTION" to specific injection routes
             # Note: "INJECTION" as route is different from dosage form
             "INJECTION_ROUTE": {"INJECTION", "INTRAVENOUS", "INTRAMUSCULAR", "SUBCUTANEOUS"},
@@ -143,6 +148,8 @@ class OpenFDAClient:
             "ORAL": {"ORAL"},
             "SUBLINGUAL": {"SUBLINGUAL"},
             "TOPICAL": {"TOPICAL"},
+            "OTIC": {"OTIC", "AURICULAR"},
+            "OPHTHALMIC": {"OPHTHALMIC", "OPHTHALMIC SOLUTION"},
         }
     
     def _match_with_synonyms(self, item_vals: Set[str], scd_val: Optional[str], is_route: bool = False) -> bool:

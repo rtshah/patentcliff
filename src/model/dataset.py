@@ -88,8 +88,12 @@ def _qc_flags(df: pd.DataFrame, config=None) -> pd.DataFrame:
     # Future date check
     flags["qc_not_future"] = ~df.get("t0_in_future", pd.Series(False, index=df.index))
     
-    # Price drop computed
-    flags["qc_has_price_drop"] = df.get("price_drop_pct", pd.Series()).notna()
+    # Price drop computed: both prices present after unit harmonization & date snapping
+    # (This means we can compute price_drop_pct, even if it's 0 or negative)
+    flags["qc_has_price_drop"] = (
+        ~df.get("missing_brand_price_t0", pd.Series(True, index=df.index)) &
+        ~df.get("missing_generic_price_t6", pd.Series(True, index=df.index))
+    )
     
     return flags
 

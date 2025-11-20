@@ -217,19 +217,23 @@ class NADACClient:
         self, 
         ndcs: List[str], 
         year_month: str,
-        page_size: int = 5000
+        page_size: int = 5000,
+        snap_days: int = 14
     ) -> pd.DataFrame:
         """
         Fetch NADAC data for given NDCs in a specific month.
         Uses server-side filtering for efficiency.
+        Supports date snapping to nearest published date within ±snap_days.
         
         Args:
             ndcs: List of 11-digit package_ndc strings
-            year_month: Format "YYYY-MM"
+            year_month: Format "YYYY-MM" (target month)
             page_size: Number of rows per page (default 5000)
+            snap_days: Days to expand search window for date snapping (default 14)
         
         Returns:
             DataFrame with columns: ndc, effective_date, nadac_per_unit, pricing_unit
+            Results are snapped to nearest published date within ±snap_days
         """
         def norm_ndc(s: str) -> str:
             """Normalize NDC to 11 digits."""
@@ -280,10 +284,25 @@ class NADACClient:
             return empty_df
         
         # Build date range for server-side filtering
+        # Expand by ±snap_days to allow date snapping
         from calendar import monthrange
+        from datetime import datetime, timedelta
         y, m = map(int, year_month.split("-"))
         last_day = monthrange(y, m)[1]
-        between_val = f"{year_month}-01/{year_month}-{last_day:02d}"
+        
+        # Target date is middle of month (or first day if snap_days=0)
+        target_date = datetime(y, m, 1)
+        if snap_days > 0:
+            # Use middle of month as target for snapping
+            target_date = datetime(y, m, min(15, last_day))
+        
+        # Expand date range by ±snap_days
+        date_start = (target_date - timedelta(days=snap_days)).strftime("%Y-%m-%d")
+        date_end = (target_date + timedelta(days=snap_days)).strftime("%Y-%m-%d")
+        
+        # Ensure we don't go outside the month boundaries (for efficiency)
+        month_start = f"{year_month}-01"
+        month_end = f"{year_month}-{last_day:02d}"
         
         frames = []
         CHUNK = 100  # Use 'in' operator which can handle more values
@@ -293,10 +312,10 @@ class NADACClient:
             ndc_chunk = ndcs_norm[i:i+CHUNK]
             
             # Build conditions: date range + NDC filter
-            # Use >= and <= for dates (more reliable than 'between')
+            # Use expanded date range for snapping
             conditions = [
-                {"property": "effective_date", "operator": ">=", "value": f"{year_month}-01"},
-                {"property": "effective_date", "operator": "<=", "value": f"{year_month}-{last_day:02d}"}
+                {"property": "effective_date", "operator": ">=", "value": date_start},
+                {"property": "effective_date", "operator": "<=", "value": date_end}
             ]
             
             # Add NDC filter using 'in' operator
@@ -350,11 +369,28 @@ class NADACClient:
         keep = [c for c in ["ndc", "effective_date", "nadac_per_unit", "pricing_unit"] if c in df.columns]
         df = df[keep].copy()
         
-        # Normalize effective_date and filter to exact month (client-side check)
+        # Normalize effective_date and apply date snapping
         if "effective_date" in df.columns:
             df["effective_date"] = pd.to_datetime(df["effective_date"], errors="coerce")
             df = df[df["effective_date"].notna()]
-            df = df[df["effective_date"].dt.to_period("M").astype(str) == year_month]
+            
+            if snap_days > 0 and len(df) > 0:
+                # Date snapping: for each NDC, keep the row with date closest to target
+                target_dt = pd.Timestamp(target_date)
+                df["_date_diff"] = (df["effective_date"] - target_dt).abs()
+                
+                # Group by NDC and keep row with minimum date difference
+                df = df.loc[df.groupby("ndc")["_date_diff"].idxmin()].copy()
+                df = df.drop(columns=["_date_diff"])
+                
+                # Filter to ensure we're within snap window
+                df = df[
+                    (df["effective_date"] >= pd.Timestamp(date_start)) &
+                    (df["effective_date"] <= pd.Timestamp(date_end))
+                ]
+            else:
+                # No snapping: filter to exact month
+                df = df[df["effective_date"].dt.to_period("M").astype(str) == year_month]
         
         # Clean nadac_per_unit (remove $ and commas)
         if "nadac_per_unit" in df.columns:

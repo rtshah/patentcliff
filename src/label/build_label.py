@@ -51,9 +51,13 @@ def build_label_row(event: Dict, openfda_client: OpenFDAClient, nadac_client: NA
     generic_ndcs, labelers = openfda_client.list_generic_ndcs_by_t6(scd, t0)
     entrants_by_6m = len(labelers)
     
-    # Compute price_T0
+    # Compute price_T0 with date snapping (±14 days)
     t0_year_month = t0.strftime("%Y-%m")
-    brand_nadac = nadac_client.fetch_nadac_month(brand_ndcs, t0_year_month)
+    brand_nadac = nadac_client.fetch_nadac_month(brand_ndcs, t0_year_month, snap_days=14)
+    
+    # Coverage gap detection: check if any NDCs mapped to NADAC
+    brand_ndcs_in_nadac = set(brand_nadac["ndc"].unique()) if not brand_nadac.empty and "ndc" in brand_nadac.columns else set()
+    no_nadac_coverage_t0 = len(brand_ndcs) > 0 and len(brand_ndcs_in_nadac) == 0
     
     price_t0 = None
     pricing_unit_t0 = None
@@ -77,10 +81,14 @@ def build_label_row(event: Dict, openfda_client: OpenFDAClient, nadac_client: NA
     else:
         mixed_units_t0 = False
     
-    # Compute price_T6
+    # Compute price_T6 with date snapping (±14 days)
     t6 = t0 + timedelta(days=180)  # ~6 months
     t6_year_month = t6.strftime("%Y-%m")
-    generic_nadac = nadac_client.fetch_nadac_month(generic_ndcs, t6_year_month)
+    generic_nadac = nadac_client.fetch_nadac_month(generic_ndcs, t6_year_month, snap_days=14)
+    
+    # Coverage gap detection: check if any NDCs mapped to NADAC
+    generic_ndcs_in_nadac = set(generic_nadac["ndc"].unique()) if not generic_nadac.empty and "ndc" in generic_nadac.columns else set()
+    no_nadac_coverage_t6 = len(generic_ndcs) > 0 and len(generic_ndcs_in_nadac) == 0
     
     price_t6 = None
     pricing_unit_t6 = None
@@ -123,6 +131,8 @@ def build_label_row(event: Dict, openfda_client: OpenFDAClient, nadac_client: NA
         "pricing_unit_t6": pricing_unit_t6,
         "missing_brand_price_t0": missing_brand_price_t0,
         "missing_generic_price_t6": missing_generic_price_t6,
+        "no_nadac_coverage_t0": no_nadac_coverage_t0,
+        "no_nadac_coverage_t6": no_nadac_coverage_t6,
         "mixed_units": mixed_units,
         "too_few_generic_ndcs": too_few_generic_ndcs,
         "t0_in_future": t0_in_future,
