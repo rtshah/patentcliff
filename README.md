@@ -166,11 +166,3 @@ make test
 - `reports/pred_vs_actual.png`: Prediction scatter plot
 - `mlruns/`: MLflow experiment tracking
 
-## License
-
-[Specify license]
-
-## Contact
-
-[Your contact information]
-
