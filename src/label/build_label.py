@@ -14,7 +14,7 @@ from src.connectors.openfda_client import OpenFDAClient
 from src.connectors.nadac_client import NADACClient
 
 
-def build_label_row(event: Dict, openfda_client: OpenFDAClient, nadac_client: NADACClient) -> Dict:
+def build_label_row(event: Dict, openfda_client: OpenFDAClient, nadac_client: NADACClient, config: Optional[Dict] = None) -> Dict:
     """
     Build label row for a single event.
     
@@ -25,6 +25,37 @@ def build_label_row(event: Dict, openfda_client: OpenFDAClient, nadac_client: NA
       qc: {missing_brand_price_t0, missing_generic_price_t6, mixed_units, ...}
     }
     """
+    if config is None:
+        config = load_config()
+    
+    # Retail filter check
+    retail_config = config.get("retail_filter", {})
+    if retail_config.get("enabled", False):
+        route_canonical = event.get("route_canonical", event.get("route", "")).upper()
+        dosage_form_canonical = event.get("dosage_form_canonical", event.get("dosage_form", "")).upper()
+        
+        allowed_routes = {r.upper() for r in retail_config.get("allowed_routes", [])}
+        allowed_forms = {f.upper() for f in retail_config.get("allowed_dosage_forms", [])}
+        
+        if route_canonical not in allowed_routes or dosage_form_canonical not in allowed_forms:
+            # Return early with retail_filter_excluded flag
+            return {
+                **event,
+                "price_t0": None,
+                "price_t6": None,
+                "price_drop_pct": None,
+                "entrants_by_6m": 0,
+                "brand_ndcs_count": 0,
+                "generic_ndcs_count": 0,
+                "pricing_unit_t0": None,
+                "pricing_unit_t6": None,
+                "missing_brand_price_t0": True,
+                "missing_generic_price_t6": True,
+                "no_nadac_coverage_t0": True,
+                "no_nadac_coverage_t6": True,
+                "retail_filter_excluded": True,
+            }
+    
     t0 = event["t0"]
     if isinstance(t0, str):
         t0 = pd.to_datetime(t0).date()
@@ -51,9 +82,19 @@ def build_label_row(event: Dict, openfda_client: OpenFDAClient, nadac_client: NA
     generic_ndcs, labelers = openfda_client.list_generic_ndcs_by_t6(scd, t0)
     entrants_by_6m = len(labelers)
     
-    # Compute price_T0 with date snapping (±14 days)
+    # Compute price_T0 with date snapping (and optional NDC-9 fallback)
     t0_year_month = t0.strftime("%Y-%m")
-    brand_nadac = nadac_client.fetch_nadac_month(brand_ndcs, t0_year_month, snap_days=14)
+    snap_days = config.get("nadac", {}).get("snap_days", 45)
+    use_ndc9_fallback = config.get("nadac", {}).get("use_ndc9_fallback", False)
+    
+    if use_ndc9_fallback:
+        brand_nadac, brand_join_flags = nadac_client.fetch_nadac_with_fallback(
+            brand_ndcs, t0_year_month, snap_days=snap_days
+        )
+        joined_on_ndc11_t0 = brand_join_flags.any() if len(brand_join_flags) > 0 else False
+    else:
+        brand_nadac = nadac_client.fetch_nadac_month(brand_ndcs, t0_year_month, snap_days=snap_days)
+        joined_on_ndc11_t0 = True  # Assume NDC-11 when fallback disabled
     
     # Coverage gap detection: check if any NDCs mapped to NADAC
     brand_ndcs_in_nadac = set(brand_nadac["ndc"].unique()) if not brand_nadac.empty and "ndc" in brand_nadac.columns else set()
@@ -81,10 +122,18 @@ def build_label_row(event: Dict, openfda_client: OpenFDAClient, nadac_client: NA
     else:
         mixed_units_t0 = False
     
-    # Compute price_T6 with date snapping (±14 days)
+    # Compute price_T6 with date snapping (and optional NDC-9 fallback)
     t6 = t0 + timedelta(days=180)  # ~6 months
     t6_year_month = t6.strftime("%Y-%m")
-    generic_nadac = nadac_client.fetch_nadac_month(generic_ndcs, t6_year_month, snap_days=14)
+    
+    if use_ndc9_fallback:
+        generic_nadac, generic_join_flags = nadac_client.fetch_nadac_with_fallback(
+            generic_ndcs, t6_year_month, snap_days=snap_days
+        )
+        joined_on_ndc11_t6 = generic_join_flags.any() if len(generic_join_flags) > 0 else False
+    else:
+        generic_nadac = nadac_client.fetch_nadac_month(generic_ndcs, t6_year_month, snap_days=snap_days)
+        joined_on_ndc11_t6 = True  # Assume NDC-11 when fallback disabled
     
     # Coverage gap detection: check if any NDCs mapped to NADAC
     generic_ndcs_in_nadac = set(generic_nadac["ndc"].unique()) if not generic_nadac.empty and "ndc" in generic_nadac.columns else set()
@@ -133,9 +182,12 @@ def build_label_row(event: Dict, openfda_client: OpenFDAClient, nadac_client: NA
         "missing_generic_price_t6": missing_generic_price_t6,
         "no_nadac_coverage_t0": no_nadac_coverage_t0,
         "no_nadac_coverage_t6": no_nadac_coverage_t6,
+        "joined_on_ndc11_t0": joined_on_ndc11_t0,
+        "joined_on_ndc11_t6": joined_on_ndc11_t6,
         "mixed_units": mixed_units,
         "too_few_generic_ndcs": too_few_generic_ndcs,
         "t0_in_future": t0_in_future,
+        "retail_filter_excluded": False,
     }
     
     return result
@@ -188,14 +240,16 @@ def main(limit: Optional[int] = None):
     labels = []
     total_events = len(events)
     for idx, event in events.iterrows():
-        if idx % 10 == 0:
-            print(f"Processing event {idx+1}/{total_events}...")
+        print(f"Processing event {idx+1}/{total_events} ({event.get('ingredient', 'unknown')})...")
         
         try:
-            label_row = build_label_row(event.to_dict(), openfda_client, nadac_client)
+            label_row = build_label_row(event.to_dict(), openfda_client, nadac_client, config)
             labels.append(label_row)
+            print(f"  ✓ Completed event {idx+1}")
         except Exception as e:
-            print(f"Error processing event {idx}: {e}")
+            print(f"  ✗ Error processing event {idx}: {e}")
+            import traceback
+            traceback.print_exc()
             continue
     
     labels_df = pd.DataFrame(labels)

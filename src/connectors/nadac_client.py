@@ -413,6 +413,213 @@ class NADACClient:
         # Cache result before returning
         self._month_cache[key] = df.copy()
         return df
+    
+    def fetch_nadac_with_fallback(
+        self,
+        ndcs: List[str],
+        year_month: str,
+        page_size: int = 5000,
+        snap_days: int = 14
+    ):
+        """
+        Fetch NADAC data with NDC-9 fallback.
+        
+        First tries exact NDC-11 match. If no results, falls back to NDC-9
+        (labeler+product) and takes median price across packages.
+        
+        Args:
+            ndcs: List of 11-digit package_ndc strings
+            year_month: Format "YYYY-MM"
+            page_size: Number of rows per page
+            snap_days: Days to expand search window
+        
+        Returns:
+            Tuple of (DataFrame with prices, Series of join flags)
+            Join flags: True if joined on NDC-11, False if joined on NDC-9
+        """
+        def norm_ndc(s: str) -> str:
+            """Normalize NDC to 11 digits."""
+            x = (s or "").replace("-", "").replace(" ", "").strip()
+            return ("0" + x) if len(x) == 10 else x
+        
+        ndcs_norm = [norm_ndc(n) for n in ndcs if n]
+        if not ndcs_norm:
+            empty_df = pd.DataFrame(columns=["ndc", "effective_date", "nadac_per_unit", "pricing_unit", "joined_on_ndc11"])
+            empty_flags = pd.Series([False] * len(ndcs), index=ndcs, name="joined_on_ndc11")
+            return empty_df, empty_flags
+        
+        # Try NDC-11 exact match first
+        result_11 = self.fetch_nadac_month(ndcs_norm, year_month, page_size, snap_days)
+        
+        # Track which NDCs matched on NDC-11
+        matched_11 = set(result_11["ndc"].unique()) if not result_11.empty else set()
+        join_flags = pd.Series(
+            [ndc in matched_11 for ndc in ndcs_norm],
+            index=ndcs_norm,
+            name="joined_on_ndc11"
+        )
+        
+        # For NDCs that didn't match on NDC-11, try NDC-9 fallback
+        unmatched_ndcs = [ndc for ndc in ndcs_norm if ndc not in matched_11]
+        
+        if not unmatched_ndcs:
+            # All matched on NDC-11
+            result_11["joined_on_ndc11"] = True
+            return result_11, join_flags
+        
+        # Extract NDC-9 (first 9 digits = labeler+product)
+        ndc9_to_ndc11 = {}
+        for ndc11 in unmatched_ndcs:
+            ndc9 = ndc11[:9]
+            if ndc9 not in ndc9_to_ndc11:
+                ndc9_to_ndc11[ndc9] = []
+            ndc9_to_ndc11[ndc9].append(ndc11)
+        
+        # Fetch all NADAC data for the month (we'll filter client-side)
+        # Use a broader query to get all NDCs starting with our NDC-9 prefixes
+        year = year_month.split("-")[0]
+        rid = self._get_dataset_uuid(year)
+        if not rid:
+            result_11["joined_on_ndc11"] = True
+            return result_11, join_flags
+        
+        # Build date range
+        from calendar import monthrange
+        from datetime import datetime, timedelta
+        y, m = map(int, year_month.split("-"))
+        target_date = datetime(y, m, min(15, monthrange(y, m)[1]))
+        date_start = (target_date - timedelta(days=snap_days)).strftime("%Y-%m-%d")
+        date_end = (target_date + timedelta(days=snap_days)).strftime("%Y-%m-%d")
+        
+        # Query for NDCs matching our NDC-9 prefixes
+        # We'll use a LIKE pattern if available, otherwise fetch and filter
+        frames_9 = []
+        for ndc9 in ndc9_to_ndc11.keys():
+            # Query for NDCs starting with this prefix
+            # NADAC API doesn't support prefix matching, so we fetch and filter
+            # For efficiency, query a reasonable range
+            body = {
+                "limit": page_size,
+                "offset": 0,
+                "conditions": [
+                    {"property": "effective_date", "operator": ">=", "value": date_start},
+                    {"property": "effective_date", "operator": "<=", "value": date_end}
+                ],
+                "sorts": [{"property": "effective_date", "order": "asc"}]
+            }
+            
+            # Fetch a batch and filter client-side
+            try:
+                resp = self._query_dkan_datastore(rid, body)
+                results = resp.get("results", [])
+                
+                # Filter to NDCs starting with our prefix
+                matching = [
+                    r for r in results
+                    if r.get("ndc", "").replace("-", "").replace(" ", "").startswith(ndc9)
+                ]
+                
+                if matching:
+                    df_chunk = pd.DataFrame(matching)
+                    frames_9.append(df_chunk)
+            except Exception as e:
+                continue
+        
+        if not frames_9:
+            # No NDC-9 matches either
+            result_11["joined_on_ndc11"] = True
+            return result_11, join_flags
+        
+        # Combine NDC-9 results
+        df_9 = pd.concat(frames_9, ignore_index=True) if frames_9 else pd.DataFrame()
+        
+        # Normalize columns
+        rename = {
+            "NDC": "ndc",
+            "PACKAGE_NDC": "ndc",
+            "EFFECTIVE_DATE": "effective_date",
+            "NADAC_PER_UNIT": "nadac_per_unit",
+            "Pricing_Unit": "pricing_unit"
+        }
+        df_9 = df_9.rename(columns={k: v for k, v in rename.items() if k in df_9.columns and v not in df_9.columns})
+        
+        # Normalize NDC format
+        if "ndc" in df_9.columns:
+            df_9["ndc"] = (
+                df_9["ndc"].astype(str)
+                .str.replace("-", "")
+                .str.strip()
+                .apply(lambda x: "0" + x if len(x) == 10 else x)
+            )
+            df_9["ndc9"] = df_9["ndc"].str[:9]
+        
+        # Normalize effective_date and apply date snapping
+        if "effective_date" in df_9.columns:
+            df_9["effective_date"] = pd.to_datetime(df_9["effective_date"], errors="coerce")
+            df_9 = df_9[df_9["effective_date"].notna()]
+            
+            if snap_days > 0 and len(df_9) > 0:
+                target_dt = pd.Timestamp(target_date)
+                df_9["_date_diff"] = (df_9["effective_date"] - target_dt).abs()
+                df_9 = df_9.loc[df_9.groupby("ndc9")["_date_diff"].idxmin()].copy()
+                df_9 = df_9.drop(columns=["_date_diff"])
+                df_9 = df_9[
+                    (df_9["effective_date"] >= pd.Timestamp(date_start)) &
+                    (df_9["effective_date"] <= pd.Timestamp(date_end))
+                ]
+        
+        # Clean nadac_per_unit
+        if "nadac_per_unit" in df_9.columns:
+            df_9["nadac_per_unit"] = (
+                df_9["nadac_per_unit"].astype(str)
+                .str.replace("$", "", regex=False)
+                .str.replace(",", "", regex=False)
+            )
+            df_9["nadac_per_unit"] = pd.to_numeric(df_9["nadac_per_unit"], errors="coerce")
+        
+        # Group by NDC-9 and take median price per pricing_unit
+        # Map back to original NDC-11s
+        result_9_rows = []
+        for ndc9, ndc11_list in ndc9_to_ndc11.items():
+            ndc9_data = df_9[df_9["ndc9"] == ndc9].copy()
+            if ndc9_data.empty:
+                continue
+            
+            # Group by pricing_unit and take median
+            for unit in ndc9_data["pricing_unit"].dropna().unique():
+                unit_data = ndc9_data[ndc9_data["pricing_unit"] == unit]
+                median_price = unit_data["nadac_per_unit"].median()
+                median_date = unit_data["effective_date"].median()
+                
+                # Create a row for each original NDC-11
+                for ndc11 in ndc11_list:
+                    result_9_rows.append({
+                        "ndc": ndc11,
+                        "effective_date": median_date,
+                        "nadac_per_unit": median_price,
+                        "pricing_unit": unit,
+                        "joined_on_ndc11": False
+                    })
+        
+        if result_9_rows:
+            df_9_result = pd.DataFrame(result_9_rows)
+            # Combine with NDC-11 results
+            if not result_11.empty:
+                result_11["joined_on_ndc11"] = True
+                final_df = pd.concat([result_11, df_9_result], ignore_index=True)
+            else:
+                final_df = df_9_result
+            
+            # Update join flags
+            for ndc11 in df_9_result["ndc"].unique():
+                if ndc11 in join_flags.index:
+                    join_flags[ndc11] = False
+            
+            return final_df, join_flags
+        
+        # No NDC-9 matches
+        result_11["joined_on_ndc11"] = True
+        return result_11, join_flags
 
 
 if __name__ == "__main__":

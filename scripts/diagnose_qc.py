@@ -72,9 +72,11 @@ qc["qc_has_brand_price"] = ~df.get("missing_brand_price_t0", pd.Series(False, in
 qc["qc_has_generic_price"] = ~df.get("missing_generic_price_t6", pd.Series(False, index=df.index))
 
 # Other checks
-qc["qc_no_mixed_units"] = ~df.get("mixed_units", pd.Series(False, index=df.index))
+mixed_units_col = df.get("mixed_units", pd.Series(False, index=df.index))
+qc["qc_no_mixed_units"] = ~mixed_units_col.fillna(False)
 qc["qc_sufficient_labelers"] = df.get("entrants_by_6m", pd.Series(0, index=df.index)).fillna(0) >= 1
-qc["qc_not_future"] = ~df.get("t0_in_future", pd.Series(False, index=df.index))
+t0_in_future_col = df.get("t0_in_future", pd.Series(False, index=df.index))
+qc["qc_not_future"] = ~t0_in_future_col.fillna(False)
 # Price drop computed: both prices present after unit harmonization & date snapping
 qc["qc_has_price_drop"] = (
     ~df.get("missing_brand_price_t0", pd.Series(True, index=df.index)) &
@@ -85,6 +87,66 @@ qc["qc_has_price_drop"] = (
 print("QC pass rates (1.0 = 100% passing each gate):")
 print(qc.mean().sort_values())
 print()
+
+# Coverage report by route/form
+print("=" * 70)
+print("COVERAGE REPORT BY ROUTE/FORM")
+print("=" * 70)
+print()
+
+if "route_canonical" in df.columns and "dosage_form_canonical" in df.columns:
+    coverage_report = df.groupby(["route_canonical", "dosage_form_canonical"]).agg({
+        "brand_ndcs_count": lambda x: (x > 0).sum(),
+        "generic_ndcs_count": lambda x: (x > 0).sum(),
+        "price_t0": lambda x: x.notna().sum(),
+        "price_t6": lambda x: x.notna().sum(),
+        "no_nadac_coverage_t0": lambda x: x.sum() if "no_nadac_coverage_t0" in df.columns else 0,
+        "no_nadac_coverage_t6": lambda x: x.sum() if "no_nadac_coverage_t6" in df.columns else 0,
+    }).rename(columns={
+        "brand_ndcs_count": "has_brand_ndcs",
+        "generic_ndcs_count": "has_generic_ndcs",
+        "price_t0": "has_price_t0",
+        "price_t6": "has_price_t6",
+        "no_nadac_coverage_t0": "no_coverage_t0",
+        "no_nadac_coverage_t6": "no_coverage_t6",
+    })
+    
+    # Add total count and has_both_prices
+    coverage_report["total"] = df.groupby(["route_canonical", "dosage_form_canonical"]).size()
+    coverage_report["has_both_prices"] = (
+        df.groupby(["route_canonical", "dosage_form_canonical"])
+        .apply(lambda g: ((g["price_t0"].notna()) & (g["price_t6"].notna())).sum())
+    )
+    
+    # Sort by total descending
+    coverage_report = coverage_report.sort_values("total", ascending=False)
+    
+    print(coverage_report.to_string())
+    print()
+    
+    # Retail-only vs all comparison
+    if "retail_filter_excluded" in df.columns:
+        retail_only = df[df.get("retail_filter_excluded", pd.Series(False, index=df.index)) == False]
+        print("=" * 70)
+        print("RETAIL-ONLY vs ALL COMPARISON")
+        print("=" * 70)
+        print()
+        print(f"All events: {len(df)}")
+        print(f"Retail-only (after filter): {len(retail_only)}")
+        print()
+        
+        print("QC pass rates - ALL:")
+        print(qc.mean().sort_values())
+        print()
+        
+        if len(retail_only) > 0:
+            qc_retail = qc.loc[retail_only.index]
+            print("QC pass rates - RETAIL-ONLY:")
+            print(qc_retail.mean().sort_values())
+            print()
+    else:
+        print("(Retail filter not applied - retail_filter_excluded column not found)")
+        print()
 
 # Show first few failures per gate
 for col in qc.columns:

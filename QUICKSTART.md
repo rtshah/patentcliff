@@ -107,20 +107,12 @@ curl -X POST "http://localhost:8000/predict" \
 
 ## Common Issues
 
-### 1. Import Errors
-If you see import errors, ensure you're running from the project root:
-```bash
-cd /Users/rahulshah/Desktop/generics_proj/proj
-export PYTHONPATH="${PYTHONPATH}:$(pwd)"
-```
-
-### 2. NADAC API Issues
+NADAC API Issues
 - The NADAC UUID registry discovery may fail if the Medicaid DKAN API structure has changed
 - Check `config/cache/nadac_uuid_registry.json` and manually add year→UUID mappings if needed
 - Update `config.yaml` with manual overrides in `apis.medicaid_dkan.nadac_uuid_registry`
 
-### 3. openFDA Rate Limits
-- Add `OPENFDA_API_KEY` environment variable for higher rate limits
+openFDA Rate Limits
 - The client includes basic rate limiting, but you may need to add delays for large batches
 
 ### 4. Missing Data / QC Filtering Issues
@@ -154,14 +146,6 @@ export PYTHONPATH="${PYTHONPATH}:$(pwd)"
 3. **Some events may not have brand NDCs at T0** (flagged with `missing_brand_price_t0`)
 4. **Some events may not have generics by T+6** (flagged with `missing_generic_price_t6`)
 5. **These are filtered out in the QC step in `dataset.py`**
-
-## Next Steps
-
-1. **Test with small sample:** Start with 10-20 events to verify the pipeline
-2. **Review QC flags:** Check `artifacts/labels_sample.csv` for data quality issues
-3. **Adjust features:** Modify `src/model/dataset.py` to add/remove features
-4. **Tune models:** Adjust hyperparameters in `config.yaml` under `modeling.xgb.param_space`
-5. **Add tests:** Expand `tests/` with mocked API responses for faster iteration
 
 ## File Structure Reference
 

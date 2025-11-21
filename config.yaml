@@ -62,6 +62,31 @@ qc:
   drop_if_mixed_pricing_units: true
   min_brand_price_months_history: 9
 
+# Retail product filter (NADAC-friendly routes/forms)
+retail_filter:
+  enabled: true
+  allowed_routes:
+    - ORAL
+    - OPHTHALMIC
+    - OTIC
+    - TOPICAL
+    - NASAL
+  allowed_dosage_forms:
+    - TABLET
+    - CAPSULE
+    - ORAL SOLUTION
+    - SUSPENSION
+    - DROPS
+    - CREAM
+    - OINTMENT
+    - GEL
+    - SPRAY
+
+# NADAC date snapping
+nadac:
+  snap_days: 45  # Days to expand search window for date snapping
+  use_ndc9_fallback: false  # Enable NDC-9 fallback (slower but may improve coverage)
+
 modeling:
   splits:
     train_start: 2010-01-01
